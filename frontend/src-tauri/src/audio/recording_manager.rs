@@ -483,6 +483,13 @@ impl RecordingManager {
         self.recording_saver.get_meeting_folder().map(|p| p.clone())
     }
 
+    /// Get the session path (base_folder/session_prefix, no extension).
+    /// e.g. "/home/user/Music/meetily-recordings/MeetingName_2024-01-03_14-30"
+    /// Returns None if the recording saver has not been initialized yet.
+    pub fn get_session_path(&self) -> Option<String> {
+        self.recording_saver.session_path()
+    }
+
     /// Check for device events (disconnects/reconnects)
     /// Returns Some(DeviceEvent) if an event occurred, None otherwise
     pub fn poll_device_events(&mut self) -> Option<DeviceEvent> {

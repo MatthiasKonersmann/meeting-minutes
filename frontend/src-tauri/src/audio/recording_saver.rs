@@ -55,6 +55,8 @@ pub struct RecordingSaver {
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
     chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
     is_saving: Arc<Mutex<bool>>,
+    /// Session prefix for flat file structure (e.g. "MeetingName_2024-01-03_14-30")
+    session_prefix: String,
 }
 
 impl RecordingSaver {
@@ -67,7 +69,21 @@ impl RecordingSaver {
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
             chunk_receiver: None,
             is_saving: Arc::new(Mutex::new(false)),
+            session_prefix: String::new(),
         }
+    }
+
+    /// Get the session path (base_folder joined with session_prefix, no extension).
+    /// e.g. "/home/user/Music/meetily-recordings/MeetingName_2024-01-03_14-30"
+    /// Returns None if the folder or session prefix are not yet initialized.
+    pub fn session_path(&self) -> Option<String> {
+        if let Some(folder) = &self.meeting_folder {
+            if !self.session_prefix.is_empty() {
+                let path = folder.join(&self.session_prefix);
+                return Some(path.to_string_lossy().to_string());
+            }
+        }
+        None
     }
 
     /// Set the meeting name for this recording session
@@ -222,28 +238,34 @@ impl RecordingSaver {
         sender
     }
 
-    /// Initialize meeting folder structure and metadata
+    /// Initialize flat meeting folder structure and metadata
+    ///
+    /// New flat structure: all files stored directly in base_folder with session_prefix.
     ///
     /// # Arguments
     /// * `meeting_name` - Name of the meeting
-    /// * `create_checkpoints` - Whether to create .checkpoints/ directory and IncrementalAudioSaver
+    /// * `create_checkpoints` - Whether to create SessionPrefix_checkpoints/ directory and IncrementalAudioSaver
     fn initialize_meeting_folder(&mut self, meeting_name: &str, create_checkpoints: bool) -> Result<()> {
         // Load preferences to get base recordings folder
         let base_folder = super::recording_preferences::get_default_recordings_folder();
 
-        // Create meeting folder structure (with or without .checkpoints/ subdirectory)
-        let meeting_folder = create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?;
+        // create_meeting_folder now returns (base_path, session_prefix) - flat structure
+        let (base_folder, session_prefix) = create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?;
+
+        self.session_prefix = session_prefix.clone();
 
         // Only initialize incremental saver if checkpoints are needed (auto_save is true)
         if create_checkpoints {
-            let incremental_saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000)?;
+            let checkpoints_dir = base_folder.join(format!("{}_checkpoints", session_prefix));
+            let mut incremental_saver = IncrementalAudioSaver::new(checkpoints_dir, base_folder.clone(), 48000)?;
+            incremental_saver.set_session_prefix(session_prefix.clone());
             self.incremental_saver = Some(Arc::new(AsyncMutex::new(incremental_saver)));
-            info!("✅ Incremental audio saver initialized for meeting: {}", meeting_name);
+            info!("Incremental audio saver initialized for meeting: {}", meeting_name);
         } else {
-            info!("⚠️  Skipped incremental audio saver (auto-save disabled)");
+            info!("Skipped incremental audio saver (auto-save disabled)");
         }
 
-        // Create initial metadata
+        // Create initial metadata (filenames use session_prefix)
         let metadata = MeetingMetadata {
             version: "1.0".to_string(),
             meeting_id: None,  // Will be set by backend
@@ -252,28 +274,38 @@ impl RecordingSaver {
             completed_at: None,
             duration_seconds: None,
             devices: DeviceInfo {
-                microphone: None,  // Could be enhanced to store actual device names
+                microphone: None,
                 system_audio: None,
             },
-            audio_file: if create_checkpoints { "audio.mp4".to_string() } else { "".to_string() },
-            transcript_file: "transcripts.json".to_string(),
+            audio_file: if create_checkpoints {
+                format!("{}_audio.mp4", session_prefix)
+            } else {
+                "".to_string()
+            },
+            transcript_file: format!("{}_transcripts.json", session_prefix),
             sample_rate: 48000,
             status: "recording".to_string(),
         };
 
-        // Write initial metadata.json
-        self.write_metadata(&meeting_folder, &metadata)?;
+        // Write initial metadata file using session_prefix naming
+        self.write_metadata(&base_folder, &metadata)?;
 
-        self.meeting_folder = Some(meeting_folder);
+        self.meeting_folder = Some(base_folder);
         self.metadata = Some(metadata);
 
         Ok(())
     }
 
-    /// Write metadata.json to disk (atomic write with temp file)
+    /// Write metadata file to disk (atomic write with temp file).
+    /// Filename uses session_prefix for flat structure: "SessionPrefix_metadata.json".
     fn write_metadata(&self, folder: &PathBuf, metadata: &MeetingMetadata) -> Result<()> {
-        let metadata_path = folder.join("metadata.json");
-        let temp_path = folder.join(".metadata.json.tmp");
+        let metadata_filename = if self.session_prefix.is_empty() {
+            "metadata.json".to_string()
+        } else {
+            format!("{}_metadata.json", self.session_prefix)
+        };
+        let metadata_path = folder.join(&metadata_filename);
+        let temp_path = folder.join(format!(".{}.tmp", metadata_filename));
 
         let json_string = serde_json::to_string_pretty(metadata)?;
         std::fs::write(&temp_path, json_string)?;
@@ -282,7 +314,8 @@ impl RecordingSaver {
         Ok(())
     }
 
-    /// Write transcripts.json to disk (atomic write with temp file and validation)
+    /// Write transcripts file to disk (atomic write with temp file and validation).
+    /// Filename uses session_prefix for flat structure: "SessionPrefix_transcripts.json".
     fn write_transcripts_json(&self, folder: &PathBuf) -> Result<()> {
         // Clone segments to avoid holding lock during I/O
         let segments_clone = if let Ok(segments) = self.transcript_segments.lock() {
@@ -294,8 +327,13 @@ impl RecordingSaver {
 
         info!("Writing {} transcript segments to JSON", segments_clone.len());
 
-        let transcript_path = folder.join("transcripts.json");
-        let temp_path = folder.join(".transcripts.json.tmp");
+        let transcripts_filename = if self.session_prefix.is_empty() {
+            "transcripts.json".to_string()
+        } else {
+            format!("{}_transcripts.json", self.session_prefix)
+        };
+        let transcript_path = folder.join(&transcripts_filename);
+        let temp_path = folder.join(format!(".{}.tmp", transcripts_filename));
 
         // Create JSON structure
         let json = serde_json::json!({
@@ -397,20 +435,25 @@ impl RecordingSaver {
             return Err("No incremental saver initialized".to_string());
         };
 
-        // Save final transcripts.json with validation
+        // Save final transcripts file with validation
         if let Some(folder) = &self.meeting_folder {
             if let Err(e) = self.write_transcripts_json(folder) {
-                error!("❌ Failed to write final transcripts: {}", e);
+                error!("Failed to write final transcripts: {}", e);
                 return Err(format!("Failed to save transcripts: {}", e));
             }
 
-            // Verify transcripts were written correctly
-            let transcript_path = folder.join("transcripts.json");
+            // Verify transcripts were written correctly (using session_prefix for filename)
+            let transcripts_filename = if self.session_prefix.is_empty() {
+                "transcripts.json".to_string()
+            } else {
+                format!("{}_transcripts.json", self.session_prefix)
+            };
+            let transcript_path = folder.join(&transcripts_filename);
             if !transcript_path.exists() {
-                error!("❌ Transcript file was not created at: {}", transcript_path.display());
+                error!("Transcript file was not created at: {}", transcript_path.display());
                 return Err("Transcript file verification failed".to_string());
             }
-            info!("✅ Transcripts saved and verified at: {}", transcript_path.display());
+            info!("Transcripts saved and verified at: {}", transcript_path.display());
         }
 
         // Update metadata to completed status with actual recording duration
@@ -437,13 +480,19 @@ impl RecordingSaver {
         }
 
         // Emit save event with audio and transcript paths
+        let transcripts_filename = if self.session_prefix.is_empty() {
+            "transcripts.json".to_string()
+        } else {
+            format!("{}_transcripts.json", self.session_prefix)
+        };
         let save_event = serde_json::json!({
             "audio_file": final_audio_path.to_string_lossy(),
             "transcript_file": self.meeting_folder.as_ref()
-                .map(|f| f.join("transcripts.json").to_string_lossy().to_string()),
+                .map(|f| f.join(&transcripts_filename).to_string_lossy().to_string()),
             "meeting_name": self.meeting_name,
             "meeting_folder": self.meeting_folder.as_ref()
-                .map(|f| f.to_string_lossy().to_string())
+                .map(|f| f.to_string_lossy().to_string()),
+            "session_prefix": &self.session_prefix
         });
 
         if let Err(e) = app.emit("recording-saved", &save_event) {

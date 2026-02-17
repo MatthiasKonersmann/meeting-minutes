@@ -24,37 +24,43 @@ pub fn sanitize_filename(name: &str) -> String {
         .to_string()
 }
 
-/// Create a meeting folder with timestamp and return the path
-/// Creates structure: base_path/MeetingName_YYYY-MM-DD_HH-MM/
-///                    ├── .checkpoints/  (for incremental saves, optional)
+/// Create a meeting folder (flat structure) and return (base_path, session_prefix).
+///
+/// New flat structure: all files stored directly in base_path with session_prefix:
+///   base_path/SessionPrefix_metadata.json
+///   base_path/SessionPrefix_transcripts.json
+///   base_path/SessionPrefix_audio.mp4
+///   base_path/SessionPrefix_checkpoints/  (optional, for incremental saves)
 ///
 /// # Arguments
-/// * `base_path` - Base directory for meetings
+/// * `base_path` - Base directory for all recordings (flat, no subdirectory per meeting)
 /// * `meeting_name` - Name of the meeting
-/// * `create_checkpoints_dir` - Whether to create .checkpoints/ subdirectory (only needed when auto_save is true)
+/// * `create_checkpoints_dir` - Whether to create SessionPrefix_checkpoints/ subdirectory (only needed when auto_save is true)
+///
+/// # Returns
+/// Tuple of (base_path, session_prefix) where session_prefix = "SanitizedName_YYYY-MM-DD_HH-MM"
 pub fn create_meeting_folder(
     base_path: &PathBuf,
     meeting_name: &str,
     create_checkpoints_dir: bool,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, String)> {
     let timestamp = Utc::now().format("%Y-%m-%d_%H-%M").to_string();
     let sanitized_name = sanitize_filename(meeting_name);
-    let folder_name = format!("{}_{}", sanitized_name, timestamp);
-    let meeting_folder = base_path.join(folder_name);
+    let session_prefix = format!("{}_{}", sanitized_name, timestamp);
 
-    // Create main meeting folder
-    std::fs::create_dir_all(&meeting_folder)?;
+    // Ensure base recordings folder exists (flat structure - no subfolder per meeting)
+    std::fs::create_dir_all(base_path)?;
 
-    // Only create .checkpoints subdirectory if requested (when auto_save is true)
+    // Only create checkpoints subdirectory if requested (when auto_save is true)
     if create_checkpoints_dir {
-        let checkpoints_dir = meeting_folder.join(".checkpoints");
+        let checkpoints_dir = base_path.join(format!("{}_checkpoints", session_prefix));
         std::fs::create_dir_all(&checkpoints_dir)?;
-        log::info!("Created meeting folder with checkpoints: {}", meeting_folder.display());
+        log::info!("Created checkpoints directory for session '{}': {}", session_prefix, checkpoints_dir.display());
     } else {
-        log::info!("Created meeting folder without checkpoints: {}", meeting_folder.display());
+        log::info!("Initialized flat recording session '{}' in: {}", session_prefix, base_path.display());
     }
 
-    Ok(meeting_folder)
+    Ok((base_path.clone(), session_prefix))
 }
 
 pub fn normalize_v2(audio: &[f32]) -> Vec<f32> {

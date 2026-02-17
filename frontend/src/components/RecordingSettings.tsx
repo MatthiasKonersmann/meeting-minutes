@@ -12,6 +12,7 @@ export interface RecordingPreferences {
   file_format: string;
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
+  hotkey?: string | null;
 }
 
 interface RecordingSettingsProps {
@@ -24,11 +25,13 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     auto_save: true,
     file_format: 'mp4',
     preferred_mic_device: null,
-    preferred_system_device: null
+    preferred_system_device: null,
+    hotkey: null,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
+  const [isCapturingHotkey, setIsCapturingHotkey] = useState(false);
 
   // Load recording preferences on component mount
   useEffect(() => {
@@ -67,6 +70,34 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     };
     loadNotificationPref();
   }, []);
+
+  const handleHotkeyCapture = (e: React.KeyboardEvent) => {
+    e.preventDefault();
+    if (e.key === 'Escape') {
+      setIsCapturingHotkey(false);
+      return;
+    }
+    const parts: string[] = [];
+    if (e.ctrlKey) parts.push('CommandOrControl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    const key = e.key;
+    if (!['Control', 'Alt', 'Shift', 'Meta'].includes(key)) {
+      parts.push(key.length === 1 ? key.toUpperCase() : key);
+    }
+    if (parts.length < 2) return;
+    const hotkey = parts.join('+');
+    const newPrefs = { ...preferences, hotkey };
+    setPreferences(newPrefs);
+    setIsCapturingHotkey(false);
+    invoke('update_recording_hotkey', { hotkey }).catch(console.error);
+  };
+
+  const handleClearHotkey = async () => {
+    const newPrefs = { ...preferences, hotkey: null };
+    setPreferences(newPrefs);
+    await invoke('update_recording_hotkey', { hotkey: null });
+  };
 
   const handleAutoSaveToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, auto_save: enabled };
@@ -245,6 +276,44 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
               disabled={saving}
             />
           </div>
+        </div>
+      </div>
+
+      {/* Recording Hotkey */}
+      <div className="border-t pt-6">
+        <h4 className="text-base font-medium text-gray-900 mb-1">Recording Hotkey</h4>
+        <p className="text-sm text-gray-600 mb-4">
+          Set a global keyboard shortcut to start/stop recording from anywhere.
+        </p>
+        <div className="flex items-center gap-3">
+          {isCapturingHotkey ? (
+            <div
+              className="flex-1 px-3 py-2 border-2 border-blue-400 rounded-md text-sm bg-blue-50 text-blue-800 outline-none cursor-pointer"
+              tabIndex={0}
+              autoFocus
+              onKeyDown={handleHotkeyCapture}
+              onBlur={() => setIsCapturingHotkey(false)}
+            >
+              Press key combination... (Esc to cancel)
+            </div>
+          ) : (
+            <button
+              onClick={() => setIsCapturingHotkey(true)}
+              className="flex-1 px-3 py-2 border rounded-md text-sm text-left hover:bg-gray-50 transition-colors"
+            >
+              {preferences.hotkey
+                ? <span className="font-mono text-gray-800">{preferences.hotkey.replace('CommandOrControl', 'Ctrl')}</span>
+                : <span className="text-gray-400">Click to set hotkey...</span>}
+            </button>
+          )}
+          {preferences.hotkey && !isCapturingHotkey && (
+            <button
+              onClick={handleClearHotkey}
+              className="px-3 py-2 text-sm text-red-600 border border-red-200 rounded-md hover:bg-red-50 transition-colors"
+            >
+              Clear
+            </button>
+          )}
         </div>
       </div>
     </div>

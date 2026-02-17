@@ -22,6 +22,7 @@ pub struct IncrementalAudioSaver {
     checkpoint_count: u32,
     checkpoints_dir: PathBuf,
     meeting_folder: PathBuf,
+    session_prefix: String,
     sample_rate: u32,
 }
 
@@ -29,11 +30,10 @@ impl IncrementalAudioSaver {
     /// Create a new incremental saver
     ///
     /// # Arguments
-    /// * `meeting_folder` - Path to the meeting folder (contains .checkpoints/)
+    /// * `checkpoints_dir` - Explicit path to the checkpoints directory (must already exist)
+    /// * `meeting_folder` - Base recordings folder (flat structure, no subfolder per meeting)
     /// * `sample_rate` - Sample rate of audio (typically 48000)
-    pub fn new(meeting_folder: PathBuf, sample_rate: u32) -> Result<Self> {
-        let checkpoints_dir = meeting_folder.join(".checkpoints");
-
+    pub fn new(checkpoints_dir: PathBuf, meeting_folder: PathBuf, sample_rate: u32) -> Result<Self> {
         // Verify checkpoints directory exists
         if !checkpoints_dir.exists() {
             return Err(anyhow!("Checkpoints directory does not exist: {}", checkpoints_dir.display()));
@@ -45,8 +45,14 @@ impl IncrementalAudioSaver {
             checkpoint_count: 0,
             checkpoints_dir,
             meeting_folder,
+            session_prefix: String::new(),
             sample_rate,
         })
+    }
+
+    /// Set the session prefix (used for naming the final audio file)
+    pub fn set_session_prefix(&mut self, prefix: String) {
+        self.session_prefix = prefix;
     }
 
     /// Add an audio chunk to the buffer
@@ -129,7 +135,13 @@ impl IncrementalAudioSaver {
         }
 
         // Merge all checkpoints using FFmpeg concat
-        let final_audio_path = self.meeting_folder.join("audio.mp4");
+        // Use session_prefix for flat-structure filename if available, else fallback to "audio.mp4"
+        let audio_filename = if self.session_prefix.is_empty() {
+            "audio.mp4".to_string()
+        } else {
+            format!("{}_audio.mp4", self.session_prefix)
+        };
+        let final_audio_path = self.meeting_folder.join(&audio_filename);
         self.merge_checkpoints(&final_audio_path).await?;
 
         // Clean up checkpoints directory
@@ -421,16 +433,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_checkpoint_creation() {
-        // Create temp meeting folder
+        // Create temp meeting folder (flat structure)
         let temp_dir = tempdir().unwrap();
-        let meeting_folder = temp_dir.path().join("Test_Meeting");
-        std::fs::create_dir_all(&meeting_folder).unwrap();
-        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+        let meeting_folder = temp_dir.path().to_path_buf();
+        let session_prefix = "Test_Meeting_2024-01-03_14-30";
+        let checkpoints_dir = meeting_folder.join(format!("{}_checkpoints", session_prefix));
+        std::fs::create_dir_all(&checkpoints_dir).unwrap();
 
         let mut saver = IncrementalAudioSaver::new(
+            checkpoints_dir,
             meeting_folder.clone(),
             48000
         ).unwrap();
+        saver.set_session_prefix(session_prefix.to_string());
 
         // Add 60 seconds worth of audio (should create 2 checkpoints)
         for _ in 0..120 {  // 120 chunks of 0.5s each
@@ -450,20 +465,23 @@ mod tests {
         assert!(final_path.exists());
 
         // Verify checkpoints directory deleted
-        assert!(!meeting_folder.join(".checkpoints").exists());
+        assert!(!meeting_folder.join(format!("{}_checkpoints", session_prefix)).exists());
     }
 
     #[tokio::test]
     async fn test_empty_recording() {
         let temp_dir = tempdir().unwrap();
-        let meeting_folder = temp_dir.path().join("Empty_Test");
-        std::fs::create_dir_all(&meeting_folder).unwrap();
-        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+        let meeting_folder = temp_dir.path().to_path_buf();
+        let session_prefix = "Empty_Test_2024-01-03_14-30";
+        let checkpoints_dir = meeting_folder.join(format!("{}_checkpoints", session_prefix));
+        std::fs::create_dir_all(&checkpoints_dir).unwrap();
 
         let mut saver = IncrementalAudioSaver::new(
+            checkpoints_dir,
             meeting_folder.clone(),
             48000
         ).unwrap();
+        saver.set_session_prefix(session_prefix.to_string());
 
         // Try to finalize without adding any chunks
         let result = saver.finalize().await;

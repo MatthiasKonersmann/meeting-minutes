@@ -21,6 +21,7 @@ import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { listen } from '@tauri-apps/api/event';
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -185,6 +186,19 @@ export default function Home() {
       return () => clearInterval(interval);
     }
   }, [recordingState.isRecording]);
+
+  // Global recording hotkey listener
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen('toggle-recording-hotkey', () => {
+      if (recordingState.isRecording) {
+        handleRecordingStop(true);
+      } else {
+        handleRecordingStart();
+      }
+    }).then(fn => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, [recordingState.isRecording, handleRecordingStart, handleRecordingStop]);
 
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
