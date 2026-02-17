@@ -231,6 +231,22 @@ export function useSummaryGeneration({
           if (pollingResult.data.markdown) {
             console.log('Received markdown format from backend');
             setAiSummary({ markdown: pollingResult.data.markdown } as any);
+
+            // Save summary to file (Feature 2: save SessionPrefix_summary.json)
+            try {
+              const sessionPath = localStorage.getItem(`meeting_session_path_${meeting.id}`);
+              if (sessionPath) {
+                await invokeTauri('save_summary_to_file', {
+                  sessionPath,
+                  summaryJson: JSON.stringify(pollingResult.data, null, 2)
+                });
+                console.log('Summary saved to file:', `${sessionPath}_summary.json`);
+              }
+            } catch (saveError) {
+              console.warn('Failed to save summary to file:', saveError);
+              // Non-fatal: don't fail the summary generation
+            }
+
             setSummaryStatus('completed');
 
             // Show success toast
@@ -305,6 +321,22 @@ export function useSummaryGeneration({
           }
 
           setAiSummary(formattedSummary);
+
+          // Save summary to file (Feature 2: save SessionPrefix_summary.json)
+          try {
+            const sessionPath = localStorage.getItem(`meeting_session_path_${meeting.id}`);
+            if (sessionPath) {
+              await invokeTauri('save_summary_to_file', {
+                sessionPath,
+                summaryJson: JSON.stringify(pollingResult.data, null, 2)
+              });
+              console.log('Summary saved to file:', `${sessionPath}_summary.json`);
+            }
+          } catch (saveError) {
+            console.warn('Failed to save summary to file:', saveError);
+            // Non-fatal: don't fail the summary generation
+          }
+
           setSummaryStatus('completed');
 
           // Show success toast

@@ -45,6 +45,11 @@ static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
+// Last session path from the most recently completed recording.
+// e.g. "/home/user/Music/meetily-recordings/MeetingName_2024-01-03_14-30"
+static LAST_SESSION_PATH: once_cell::sync::Lazy<std::sync::Arc<tokio::sync::RwLock<Option<String>>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Arc::new(tokio::sync::RwLock::new(None)));
+
 // ============================================================================
 // PUBLIC TYPES
 // ============================================================================
@@ -807,12 +812,13 @@ pub async fn stop_recording<R: Runtime>(
     );
 
     // Perform final cleanup with the manager if available
-    let (meeting_folder, meeting_name) = if let Some(mut manager) = manager_for_cleanup {
+    let (meeting_folder, meeting_name, session_path) = if let Some(mut manager) = manager_for_cleanup {
         info!("🧹 Performing final cleanup and saving recording data");
 
         // Extract meeting info BEFORE async operations
         let meeting_folder = manager.get_meeting_folder();
         let meeting_name = manager.get_meeting_name();
+        let session_path = manager.get_session_path();
 
         match tokio::time::timeout(
             tokio::time::Duration::from_secs(300), // 5 minutes max for file I/O
@@ -834,10 +840,10 @@ pub async fn stop_recording<R: Runtime>(
             }
         }
 
-        (meeting_folder, meeting_name)
+        (meeting_folder, meeting_name, session_path)
     } else {
         info!("ℹ️ No recording manager available for cleanup");
-        (None, None)
+        (None, None, None)
     };
 
     // Set recording flag to false
@@ -854,6 +860,15 @@ pub async fn stop_recording<R: Runtime>(
         ),
         _ => (None, None),
     };
+
+    // Store the session_path in the global for later retrieval via get_last_session_path command
+    {
+        let mut guard = LAST_SESSION_PATH.write().await;
+        *guard = session_path.clone();
+        if let Some(ref sp) = session_path {
+            info!("Stored last session path: {}", sp);
+        }
+    }
 
     info!("📤 Preparing recording metadata for frontend save");
     info!("   folder_path: {:?}", folder_path_str);
@@ -872,13 +887,14 @@ pub async fn stop_recording<R: Runtime>(
         }),
     );
 
-    // Emit final stop event with folder_path and meeting_name for frontend to save
+    // Emit final stop event with folder_path, meeting_name, and session_path for frontend to save
     app.emit(
         "recording-stopped",
         serde_json::json!({
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
-            "meeting_name": meeting_name_str
+            "meeting_name": meeting_name_str,
+            "session_path": session_path
         }),
     )
     .map_err(|e| e.to_string())?;
@@ -1022,6 +1038,15 @@ pub async fn get_meeting_folder_path() -> Result<Option<String>, String> {
     } else {
         Ok(None)
     }
+}
+
+/// Get the session path from the most recently completed recording.
+/// Returns a string like "/path/to/meetily-recordings/MeetingName_2024-01-03_14-30" (no extension).
+/// The caller can append "_summary.json", "_metadata.json", etc. to get the actual file paths.
+#[tauri::command]
+pub async fn get_last_session_path() -> Result<Option<String>, String> {
+    let guard = LAST_SESSION_PATH.read().await;
+    Ok(guard.clone())
 }
 
 /// Get accumulated transcript segments from current recording session

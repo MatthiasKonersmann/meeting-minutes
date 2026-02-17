@@ -82,10 +82,11 @@ export function useRecordingStop(
           message: string;
           folder_path?: string;
           meeting_name?: string;
+          session_path?: string;
         }>('recording-stopped', async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name } = event.payload;
+            const { folder_path, meeting_name, session_path } = event.payload;
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -93,6 +94,11 @@ export function useRecordingStop(
             }
             if (meeting_name) {
               sessionStorage.setItem('last_recording_meeting_name', meeting_name);
+            }
+            // Store session_path for associating with meeting_id on the meeting-details page
+            if (session_path) {
+              sessionStorage.setItem('current_session_path', session_path);
+              console.log('Stored current_session_path:', session_path);
             }
           })();
 

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd /c \"where cargo 2>&1\")",
+      "Bash(cmd /c \"rustup show 2>&1 & cargo --version 2>&1\")",
+      "Bash(powershell.exe -Command \"Get-Command cargo -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source\")",
+      "Bash(powershell.exe -Command \"& { $env:PATH; }\")",
+      "Bash(powershell.exe -Command \"Write-Output $env:PATH\")"
+    ]
+  }
+}

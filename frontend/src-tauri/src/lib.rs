@@ -54,6 +54,7 @@ pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
 
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
 use notifications::commands::NotificationManagerState;
@@ -396,6 +397,39 @@ pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
 }
 
+#[tauri::command]
+async fn update_recording_hotkey<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    hotkey: Option<String>,
+) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    app.global_shortcut().unregister_all().map_err(|e| e.to_string())?;
+    if let Some(ref hotkey_str) = hotkey {
+        if !hotkey_str.is_empty() {
+            app.global_shortcut().on_shortcut(
+                hotkey_str.as_str(),
+                move |_app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        let _ = _app.emit("toggle-recording-hotkey", ());
+                    }
+                },
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+    if let Ok(mut prefs) = crate::audio::recording_preferences::load_recording_preferences(&app).await {
+        prefs.hotkey = hotkey;
+        let _ = crate::audio::recording_preferences::save_recording_preferences(&app, &prefs).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_summary_to_file(session_path: String, summary_json: String) -> Result<(), String> {
+    let file_path = format!("{}_summary.json", session_path);
+    std::fs::write(&file_path, &summary_json)
+        .map_err(|e| format!("Failed to write summary file '{}': {}", file_path, e))
+}
+
 pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
 
@@ -405,6 +439,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -503,11 +538,37 @@ pub fn run() {
                 log::warn!("Failed to resolve resource directory for templates");
             }
 
+            // Register saved recording hotkey if any
+            {
+                let app_handle = _app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use crate::audio::recording_preferences::load_recording_preferences;
+                    if let Ok(prefs) = load_recording_preferences(&app_handle).await {
+                        if let Some(hotkey_str) = prefs.hotkey {
+                            if !hotkey_str.is_empty() {
+                                if let Err(e) = app_handle.global_shortcut().on_shortcut(
+                                    hotkey_str.as_str(),
+                                    move |_app, _shortcut, event| {
+                                        if event.state == ShortcutState::Pressed {
+                                            let _ = _app.emit("toggle-recording-hotkey", ());
+                                        }
+                                    },
+                                ) {
+                                    log::warn!("Failed to register hotkey '{}': {}", hotkey_str, e);
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             start_recording,
             stop_recording,
+            update_recording_hotkey,
+            save_summary_to_file,
             is_recording,
             get_transcription_status,
             read_audio_file,
@@ -589,6 +650,8 @@ pub fn run() {
             audio::recording_commands::is_recording_paused,
             audio::recording_commands::get_recording_state,
             audio::recording_commands::get_meeting_folder_path,
+            // Get session path from the last completed recording (for summary file saving)
+            audio::recording_commands::get_last_session_path,
             // Reload sync commands (retrieve transcript history and meeting name)
             audio::recording_commands::get_transcript_history,
             audio::recording_commands::get_recording_meeting_name,

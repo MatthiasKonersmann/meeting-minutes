@@ -137,6 +137,33 @@ export default function PageContent({
     Analytics.trackPageView('meeting_details');
   }, []);
 
+  // Associate session_path with meeting_id in localStorage for summary file saving (Feature 2).
+  // When we arrive at meeting-details right after a recording stops, sessionStorage has
+  // 'current_session_path'. We persist it to localStorage keyed by meeting.id so that
+  // useSummaryGeneration can find it later even after page refreshes.
+  useEffect(() => {
+    if (!meeting.id) return;
+
+    // Check if a session path is waiting to be associated
+    const sessionPath = sessionStorage.getItem('current_session_path');
+    if (!sessionPath) return;
+
+    // Only associate if the meeting was created recently (within the last 10 minutes)
+    // to avoid associating a stale session_path with a different meeting
+    try {
+      const createdAt = new Date(meeting.created_at).getTime();
+      const ageMinutes = (Date.now() - createdAt) / 60000;
+      if (ageMinutes <= 10) {
+        localStorage.setItem(`meeting_session_path_${meeting.id}`, sessionPath);
+        console.log(`Associated session_path with meeting ${meeting.id}:`, sessionPath);
+        // Clear from sessionStorage so it is not re-associated on next navigation
+        sessionStorage.removeItem('current_session_path');
+      }
+    } catch (e) {
+      console.warn('Failed to associate session_path with meeting:', e);
+    }
+  }, [meeting.id, meeting.created_at]);
+
   // Auto-generate summary when flag is set
   useEffect(() => {
     let cancelled = false;
